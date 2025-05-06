@@ -1,0 +1,423 @@
+// Top module
+module risc_processor (
+	input clk,
+	input reset,
+	output reg [31:0] pc,
+	output wire [31:0] r1, r4, r7, r8, r10,
+	output reg alusrc_, mr_, mw_, mreg_, enrw_, ifidwrite_, pcwrite_, st_, enim_,
+	output reg [1:0] fa_, fb_, aluop_
+);
+	// Pipeline register contents
+	reg [31:0] if_id_instruction, if_id_pc;
+	reg [31:0] id_ex_rd1, id_ex_rd2, id_ex_imm;
+	reg [3:0] id_ex_wn, id_ex_rn1, id_ex_rn2;
+	reg id_ex_alusrc, id_ex_mr, id_ex_mw, id_ex_mreg, id_ex_enrw;
+	reg [1:0] id_ex_aluop;
+	reg [31:0] ex_mem_alu_result, ex_mem_rd2;
+	reg [3:0] ex_mem_wn;
+	reg ex_mem_mr, ex_mem_mw, ex_mem_mreg, ex_mem_enrw;
+	reg [31:0] mem_wb_mem_data, mem_wb_alu_result;
+	reg [3:0] mem_wb_wn;
+	reg mem_wb_mreg, mem_wb_enrw;
+
+	// Control signals
+	wire alusrc, mr, mw, mreg, enrw, ifidwrite, pcwrite, st, enim;
+	wire [1:0] aluop;
+	wire [1:0] fa, fb;
+	reg [31:0] pc_next;
+    
+	// Update control signals outputs
+	always @(*) begin
+    	if (reset) begin
+        	alusrc_ <= 0;
+        	mr_ <= 0;
+        	mw_ <= 0;
+        	mreg_ <= 0;
+        	enrw_ <= 0;
+        	ifidwrite_ <= 0;
+        	pcwrite_ <= 0;
+        	st_ <= 0;
+        	enim_ <= 0;
+        	fa_ <= 0;
+        	fb_ <= 0;
+        	aluop_ <= 0;
+    	end else begin
+        	alusrc_ <= alusrc;
+        	mr_ <= mr;
+        	mw_ <= mw;
+        	mreg_ <= mreg;
+        	enrw_ <= enrw;
+        	ifidwrite_ <= ifidwrite;
+        	pcwrite_ <= pcwrite;
+        	st_ <= st;
+        	enim_ <= enim;
+        	fa_ <= fa;
+        	fb_ <= fb;
+        	aluop_ <= aluop;
+    	end
+	end
+
+	// PC update
+	always @(posedge clk or posedge reset) begin
+    	if (reset) begin
+        	pc <= 0;
+        	pc_next <= 4;
+    	end else if (pcwrite) begin
+        	pc <= pc_next;
+        	pc_next <= pc_next + 4;
+    	end
+	end
+
+	// Instruction Fetch Stage
+	wire [31:0] instruction;
+	instruction_memory imem (
+    	.addr(pc),
+    	.instruction(instruction)
+	);
+
+	// IF/ID Pipeline Register
+	always @(posedge clk or posedge reset) begin
+    	if (reset) begin
+        	if_id_instruction <= 0;
+        	if_id_pc <= 0;
+    	end else if (ifidwrite) begin
+        	if_id_instruction <= instruction;
+        	if_id_pc <= pc;
+    	end
+	end
+
+	// Instruction Decode Stage
+	wire [3:0] opcode = if_id_instruction[31:28];
+	wire [3:0] wn = if_id_instruction[27:24];
+	wire [3:0] rn1 = if_id_instruction[23:20];
+	wire [3:0] rn2 = if_id_instruction[19:16];
+	wire [15:0] imm = if_id_instruction[15:0];
+	wire [31:0] rd1, rd2;
+
+	// Control Unit
+	assign alusrc = (opcode == 4'b0011 || opcode == 4'b1111);
+	assign mr = (opcode == 4'b0011);
+	assign mw = 1'b0;
+	assign mreg = (opcode == 4'b0011);
+	assign enrw = 1'b1;
+	assign enim = 1'b1;
+	assign aluop = (opcode == 4'b0000) ? 2'b01 : // SUB
+               	(opcode == 4'b0001) ? 2'b11 : // NAND
+               	(opcode == 4'b0111) ? 2'b10 : // AND
+               	2'b00; // ADD for LW, ADDI
+               	
+	// Register File
+	register_file regfile (
+    	.clk(clk),
+    	.enrw(mem_wb_enrw),
+    	.rn1(rn1),
+    	.rn2(rn2),
+    	.wn(mem_wb_wn),
+    	.wd(mem_wb_mreg ? mem_wb_mem_data : mem_wb_alu_result),
+    	.rd1(rd1),
+    	.rd2(rd2),
+    	.r1(r1),
+    	.r4(r4),
+    	.r7(r7),
+    	.r8(r8),
+    	.r10(r10)
+	);
+
+	// ID/EX Pipeline Register
+	always @(posedge clk or posedge reset) begin
+    	if (reset) begin
+        	id_ex_rd1 <= 0;
+        	id_ex_rd2 <= 0;
+        	id_ex_imm <= 0;
+        	id_ex_wn <= 0;
+        	id_ex_rn1 <= 0;
+        	id_ex_rn2 <= 0;
+        	id_ex_alusrc <= 0;
+        	id_ex_aluop <= 0;
+        	id_ex_mr <= 0;
+        	id_ex_mw <= 0;
+        	id_ex_mreg <= 0;
+        	id_ex_enrw <= 0;
+    	end else if (st) begin
+        	// Stall - insert NOP
+        	id_ex_alusrc <= 0;
+        	id_ex_aluop <= 0;
+        	id_ex_mr <= 0;
+        	id_ex_mw <= 0;
+        	id_ex_mreg <= 0;
+        	id_ex_enrw <= 0;
+        	id_ex_rd1 <= rd1;
+        	id_ex_rd2 <= rd2;
+        	id_ex_imm <= {{16{imm[15]}}, imm};
+        	id_ex_wn <= wn;
+        	id_ex_rn1 <= rn1;
+        	id_ex_rn2 <= rn2;
+    	end else begin
+        	id_ex_rd1 <= rd1;
+        	id_ex_rd2 <= rd2;
+        	id_ex_imm <= {{16{imm[15]}}, imm};
+        	id_ex_wn <= wn;
+        	id_ex_rn1 <= rn1;
+        	id_ex_rn2 <= rn2;
+        	id_ex_alusrc <= alusrc;
+        	id_ex_aluop <= aluop;
+        	id_ex_mr <= mr;
+        	id_ex_mw <= mw;
+        	id_ex_mreg <= mreg;
+        	id_ex_enrw <= enrw;
+    	end
+	end
+
+	// Execute Stage
+	wire [31:0] alu_a = (fa == 2'b10) ? ex_mem_alu_result :
+                   	(fa == 2'b01) ? (mem_wb_mreg ? mem_wb_mem_data : mem_wb_alu_result) :
+                   	id_ex_rd1;
+                  	 
+	wire [31:0] alu_b = id_ex_alusrc ? id_ex_imm :
+                   	((fb == 2'b10) ? ex_mem_alu_result :
+                   	(fb == 2'b01) ? (mem_wb_mreg ? mem_wb_mem_data : mem_wb_alu_result) :
+                   	id_ex_rd2);
+                  	 
+	wire [31:0] alu_result;
+	alu alu_unit (
+    	.op(id_ex_aluop),
+    	.a(alu_a),
+    	.b(alu_b),
+    	.result(alu_result)
+	);
+
+	// EX/MEM Pipeline Register
+	always @(posedge clk or posedge reset) begin
+    	if (reset) begin
+        	ex_mem_alu_result <= 0;
+        	ex_mem_rd2 <= 0;
+        	ex_mem_wn <= 0;
+        	ex_mem_mr <= 0;
+        	ex_mem_mw <= 0;
+        	ex_mem_mreg <= 0;
+        	ex_mem_enrw <= 0;
+    	end else begin
+        	ex_mem_alu_result <= alu_result;
+        	ex_mem_rd2 <= id_ex_rd2;
+        	ex_mem_wn <= id_ex_wn;
+        	ex_mem_mr <= id_ex_mr;
+        	ex_mem_mw <= id_ex_mw;
+        	ex_mem_mreg <= id_ex_mreg;
+        	ex_mem_enrw <= id_ex_enrw;
+    	end
+	end
+
+	// Memory Stage
+	wire [31:0] mem_data;
+	data_memory dmem (
+    	.clk(clk),
+    	.mr(ex_mem_mr),
+    	.mw(ex_mem_mw),
+    	.addr(ex_mem_alu_result),
+    	.data_in(ex_mem_rd2),
+    	.data_out(mem_data)
+	);
+
+	// MEM/WB Pipeline Register
+	always @(posedge clk or posedge reset) begin
+    	if (reset) begin
+        	mem_wb_mem_data <= 0;
+        	mem_wb_alu_result <= 0;
+        	mem_wb_wn <= 0;
+        	mem_wb_mreg <= 0;
+        	mem_wb_enrw <= 0;
+    	end else begin
+        	mem_wb_mem_data <= mem_data;
+        	mem_wb_alu_result <= ex_mem_alu_result;
+        	mem_wb_wn <= ex_mem_wn;
+        	mem_wb_mreg <= ex_mem_mreg;
+        	mem_wb_enrw <= ex_mem_enrw;
+    	end
+	end
+
+	// Hazard Detection Unit
+	hazard_detection hazard_unit (
+    	.id_ex_memread(id_ex_mr),
+    	.id_ex_wn(id_ex_wn),
+    	.if_id_rn1(rn1),
+    	.if_id_rn2(rn2),
+    	.ifidwrite(ifidwrite),
+    	.pcwrite(pcwrite),
+    	.st(st)
+	);
+
+	// Forwarding Unit
+	forwarding_unit forward_unit (
+    	.ex_mem_wn(ex_mem_wn),
+    	.mem_wb_wn(mem_wb_wn),
+    	.ex_mem_regwrite(ex_mem_enrw),
+    	.mem_wb_regwrite(mem_wb_enrw),
+    	.id_ex_rn1(id_ex_rn1),
+    	.id_ex_rn2(id_ex_rn2),
+    	.fa(fa),
+    	.fb(fb)
+	);
+endmodule
+
+// Instruction Memory Module
+module instruction_memory (
+	input [31:0] addr,
+	output reg [31:0] instruction
+);
+	reg [31:0] imem [0:7];
+    
+	initial begin
+    	imem[0] = 32'h01230000; // SUB r1, r2, r3
+    	imem[1] = 32'h14150000; // NAND r4, r1, r5
+    	imem[2] = 32'h37600003; // LW r7, 3(r6)
+    	imem[3] = 32'h78790000; // AND r8, r7, r9
+    	imem[4] = 32'hFA8003F2; // ADDI r10, r8, 1010
+    	imem[5] = 0;
+    	imem[6] = 0;
+    	imem[7] = 0;
+	end
+    
+	always @(*) begin
+    	instruction = imem[addr[4:2]];
+	end
+endmodule
+
+// Register File Module
+module register_file (
+	input clk,
+	input enrw,
+	input [3:0] rn1, rn2, wn,
+	input [31:0] wd,
+	output reg [31:0] rd1, rd2, r1, r4, r7, r8, r10
+);
+	reg [31:0] registers [0:15];
+    
+	initial begin
+    	registers[0] = 32'h0;
+    	registers[1] = 32'h0;
+    	registers[2] = 32'h82344;
+    	registers[3] = 32'h20413;
+    	registers[4] = 32'h0;
+    	registers[5] = 32'h16ACD;
+    	registers[6] = 32'h9;
+    	registers[7] = 32'h0;
+    	registers[8] = 32'h0;
+    	registers[9] = 32'hA123E;
+    	registers[10] = 32'h0;
+    	registers[11] = 32'h0;
+    	registers[12] = 32'h0;
+    	registers[13] = 32'h0;
+    	registers[14] = 32'h0;
+    	registers[15] = 32'h0;
+	end
+    
+	always @(negedge clk) 
+	begin
+    	rd1 = registers[rn1];
+        rd2 = registers[rn2];
+    end 
+ 	always @(*) 
+    begin
+        r1 = registers[1];
+        r4 = registers[4];
+        r7 = registers[7];
+        r8 = registers[8];
+        r10 = registers[10];
+    end
+	always @(posedge clk) begin
+    	if (enrw && wn != 0)
+        	registers[wn] = wd;
+	end
+endmodule
+
+// ALU Module
+module alu (
+	input [1:0] op,
+	input [31:0] a, b,
+	output reg [31:0] result
+);
+	always @(*) begin
+    	case (op)
+        	2'b00: result = a + b; // ADD
+        	2'b01: result = a - b; // SUB
+        	2'b10: result = a & b; // AND
+        	2'b11: result = ~(a & b); // NAND
+        	default: result = 0;
+    	endcase
+	end
+endmodule
+
+// Data Memory Module
+module data_memory (
+	input clk,
+	input mr, mw,
+	input [31:0] addr,
+	input [31:0] data_in,
+	output reg [31:0] data_out
+);
+	reg [31:0] dmem [0:15];
+    
+	initial begin
+    	dmem[12] = 32'h12345678; // Address 12
+	end
+    
+	always @(*) begin
+    	if (mr)
+        	data_out = dmem[addr];
+    	else
+        	data_out = 32'h0;
+	end
+    
+	// Write on positive edge
+	always @(posedge clk) begin
+    	if (mw)
+        	dmem[addr] <= data_in;
+	end
+endmodule
+
+// Hazard Detection Module
+module hazard_detection (
+	input id_ex_memread,
+	input [3:0] id_ex_wn,
+	input [3:0] if_id_rn1, if_id_rn2,
+	output reg ifidwrite, pcwrite, st
+);
+	always @(*) begin
+    	if (id_ex_memread && id_ex_wn != 0 &&
+        	(id_ex_wn == if_id_rn1 || id_ex_wn == if_id_rn2)) begin
+        	ifidwrite = 0;
+        	pcwrite = 0;
+        	st = 1;
+    	end else begin
+        	ifidwrite = 1;
+        	pcwrite = 1;
+        	st = 0;
+    	end
+	end
+endmodule
+
+// Forwarding Unit Module
+module forwarding_unit (
+	input [3:0] ex_mem_wn, mem_wb_wn,
+	input ex_mem_regwrite, mem_wb_regwrite,
+	input [3:0] id_ex_rn1, id_ex_rn2,
+	output reg [1:0] fa, fb
+);
+	always @(*) begin
+    	// Forward A
+    	if (ex_mem_regwrite && ex_mem_wn != 0 && ex_mem_wn == id_ex_rn1)
+        	fa = 2'b10;
+    	else if (mem_wb_regwrite && mem_wb_wn != 0 && mem_wb_wn == id_ex_rn1)
+        	fa = 2'b01;
+    	else
+        	fa = 2'b00;
+       	 
+    	// Forward B
+    	if (ex_mem_regwrite && ex_mem_wn != 0 && ex_mem_wn == id_ex_rn2)
+        	fb = 2'b10;
+    	else if (mem_wb_regwrite && mem_wb_wn != 0 && mem_wb_wn == id_ex_rn2)
+        	fb = 2'b01;
+    	else
+        	fb = 2'b00;
+	end
+endmodule
